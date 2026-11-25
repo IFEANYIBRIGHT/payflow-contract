@@ -1019,9 +1019,6 @@ mod contract {
             }
             Ok(())
         }
-            }
-            Ok(())
-        }
 
         fn do_debit(
             env: &Env,

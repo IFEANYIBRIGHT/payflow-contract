@@ -50,7 +50,6 @@ pub enum Error {
     /// repeatedly rewrites balances and emits events; it resets when the
     /// window rolls over.
     RateLimitExceeded = 3015,
-    RateLimitExceeded = 3015,
     /// A token transfer did not move exactly the requested amount, so the
     /// token is not safe for the vault's exact-amount accounting (for example
     /// a fee-on-transfer token). The whole operation is rolled back.
@@ -58,7 +57,6 @@ pub enum Error {
     /// A transfer destination is the zero/unset address: the all-zero contract
     /// or account strkey. Sending funds there would burn them (#236).
     ZeroAddress = 3017,
-
 }
 
 impl From<Error> for ErrorCode {
