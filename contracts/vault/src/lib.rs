@@ -298,8 +298,7 @@ mod contract {
 
             Self::record_operation(&env, &user, &token)?;
 
-            let vault = env.current_contract_address();
-            token::TokenClient::new(&env, &token).transfer(&user, &vault, &amount);
+            Self::transfer_in(&env, &token, &user, amount)?;
 
             Self::write_balance(&env, &user, &token, new_balance);
 
@@ -347,8 +346,7 @@ mod contract {
 
             Self::record_operation(&env, &user, &token)?;
 
-            let vault = env.current_contract_address();
-            token::TokenClient::new(&env, &token).transfer(&from, &vault, &amount);
+            Self::transfer_in(&env, &token, &from, amount)?;
 
             Self::write_balance(&env, &user, &token, new_balance);
 
@@ -394,8 +392,7 @@ mod contract {
             Self::require_recipient(&env, &user)?;
             let new_balance = Self::do_withdraw(&env, &user, &token, amount)?;
 
-            let vault = env.current_contract_address();
-            token::TokenClient::new(&env, &token).transfer(&vault, &user, &amount);
+            Self::transfer_out(&env, &token, &user, amount)?;
 
             Withdraw {
                 user,
@@ -443,8 +440,7 @@ mod contract {
             Self::require_recipient(&env, &to)?;
             let new_balance = Self::do_withdraw(&env, &user, &token, amount)?;
 
-            let vault = env.current_contract_address();
-            token::TokenClient::new(&env, &token).transfer(&vault, &to, &amount);
+            Self::transfer_out(&env, &token, &to, amount)?;
 
             WithdrawTo {
                 user,
@@ -498,8 +494,7 @@ mod contract {
 
             Self::write_balance(&env, &user, &token, reserved);
 
-            let vault = env.current_contract_address();
-            token::TokenClient::new(&env, &token).transfer(&vault, &user, &amount);
+            Self::transfer_out(&env, &token, &user, amount)?;
 
             Withdraw {
                 user,
@@ -977,6 +972,57 @@ mod contract {
             Ok(())
         }
 
+        /// Move `amount` from `from` into the vault only if the vault's token
+        /// balance grows by exactly `amount`. Returns
+        /// [`Error::UnexpectedTransferAmount`] otherwise (a fee-on-transfer
+        /// token, for example), which rolls the invocation back.
+        fn transfer_in(
+            env: &Env,
+            token: &Address,
+            from: &Address,
+            amount: i128,
+        ) -> Result<(), Error> {
+            let client = token::TokenClient::new(env, token);
+            let vault = env.current_contract_address();
+            let before = client.balance(&vault);
+            client.transfer(from, &vault, &amount);
+            let received = client
+                .balance(&vault)
+                .checked_sub(before)
+                .ok_or(Error::UnexpectedTransferAmount)?;
+            if received != amount {
+                return Err(Error::UnexpectedTransferAmount);
+            }
+            Ok(())
+        }
+
+        /// Pay `amount` to `to` only if `to`'s token balance grows by exactly
+        /// `amount`. A fee-on-transfer token shortchanges the recipient, so the
+        /// transfer is rolled back rather than settling a charge or withdrawal
+        /// that delivered less than the contract recorded.
+        fn transfer_out(
+            env: &Env,
+            token: &Address,
+            to: &Address,
+            amount: i128,
+        ) -> Result<(), Error> {
+            let client = token::TokenClient::new(env, token);
+            let vault = env.current_contract_address();
+            let before = client.balance(to);
+            client.transfer(&vault, to, &amount);
+            let received = client
+                .balance(to)
+                .checked_sub(before)
+                .ok_or(Error::UnexpectedTransferAmount)?;
+            if received != amount {
+                return Err(Error::UnexpectedTransferAmount);
+            }
+            Ok(())
+        }
+            }
+            Ok(())
+        }
+
         fn do_debit(
             env: &Env,
             user: &Address,
@@ -994,8 +1040,7 @@ mod contract {
 
             let new_balance = Self::spend(env, user, token, mandate_id, amount)?;
 
-            let vault = env.current_contract_address();
-            token::TokenClient::new(env, token).transfer(&vault, to, &amount);
+            Self::transfer_out(env, token, to, amount)?;
 
             Debit {
                 user: user.clone(),
@@ -1041,10 +1086,7 @@ mod contract {
             let after_both = Self::spend(env, user, token, mandate_id, total)?;
             let after_a = after_both + amount_b;
 
-            let vault = env.current_contract_address();
-            let token_client = token::TokenClient::new(env, token);
-
-            token_client.transfer(&vault, to_a, &amount_a);
+            Self::transfer_out(env, token, to_a, amount_a)?;
             Debit {
                 user: user.clone(),
                 token: token.clone(),
@@ -1055,7 +1097,7 @@ mod contract {
             .publish(env);
 
             if amount_b > 0 {
-                token_client.transfer(&vault, to_b, &amount_b);
+                Self::transfer_out(env, token, to_b, amount_b)?;
                 Debit {
                     user: user.clone(),
                     token: token.clone(),
@@ -1106,9 +1148,6 @@ mod contract {
             // The whole total counts against the spend limit once.
             let after_all = Self::spend(env, user, token, mandate_id, total)?;
 
-            let vault = env.current_contract_address();
-            let token_client = token::TokenClient::new(env, token);
-
             // Track running balance for events: start from after_all and add back
             // each leg's amount as we go backwards, or track forward.
             // We want the first event to show balance after first leg, etc.
@@ -1126,7 +1165,7 @@ mod contract {
                 let amount = leg.1;
 
                 if amount > 0 {
-                    token_client.transfer(&vault, to, &amount);
+                    Self::transfer_out(env, token, to, amount)?;
 
                     Debit {
                         user: user.clone(),
@@ -1222,10 +1261,16 @@ mod contract {
         }
 
         fn read_reserved(env: &Env, user: &Address, token: &Address, mandate_id: u64) -> i128 {
-            env.storage()
-                .persistent()
-                .get(&DataKey::Reserved(user.clone(), token.clone(), mandate_id))
-                .unwrap_or(0)
+            let key = DataKey::Reserved(user.clone(), token.clone(), mandate_id);
+            let p = env.storage().persistent();
+            let Some(amount) = p.get::<_, i128>(&key) else {
+                return 0;
+            };
+            // A reserve belongs to a live mandate (#247): refreshing it on
+            // access keeps the reservation from expiring while the mandate is
+            // still being charged. A missing reserve is a no-op.
+            p.extend_ttl(&key, PERSIST_THRESHOLD, PERSIST_BUMP);
+            amount
         }
 
         /// Store a mandate's reserve; 0 removes the entry so an unreserved
@@ -1248,10 +1293,13 @@ mod contract {
         }
 
         fn read_reserved_total(env: &Env, user: &Address, token: &Address) -> i128 {
-            env.storage()
-                .persistent()
-                .get(&DataKey::ReservedTotal(user.clone(), token.clone()))
-                .unwrap_or(0)
+            let key = DataKey::ReservedTotal(user.clone(), token.clone());
+            let p = env.storage().persistent();
+            let Some(amount) = p.get::<_, i128>(&key) else {
+                return 0;
+            };
+            p.extend_ttl(&key, PERSIST_THRESHOLD, PERSIST_BUMP);
+            amount
         }
 
         fn write_reserved_total(env: &Env, user: &Address, token: &Address, amount: i128) {
@@ -1347,13 +1395,17 @@ mod contract {
                 _ => (now - (now % limit.window_secs), 0),
             };
 
-            if spent.saturating_add(amount) > limit.amount {
+            // `checked_add`, not `saturating_add`: a spent total at i128::MAX
+            // must fail the limit instead of passing the check and then
+            // overflowing on the write below.
+            let new_spent = spent.checked_add(amount).ok_or(Error::SpendLimitExceeded)?;
+            if new_spent > limit.amount {
                 return Err(Error::SpendLimitExceeded);
             }
 
             Ok(Some(SpendWindow {
                 start,
-                spent: spent + amount,
+                spent: new_spent,
             }))
         }
 

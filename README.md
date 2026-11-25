@@ -154,6 +154,8 @@ consequences) in [`docs/adr/`](docs/adr/index.md):
 - [0003: Constructors instead of `initialize`](docs/adr/0003-constructors-not-initialize.md)
 - [0004: Per-position indexes](docs/adr/0004-per-position-indexes.md)
 - [0005: Permissionless `charge`](docs/adr/0005-permissionless-charge.md)
+- [0006: Prorated upgrade charging](docs/adr/0006-prorated-upgrade-charging.md)
+- [0007: TTL refresh on access for hot keys](docs/adr/0007-ttl-refresh-on-access.md)
 
 Add a new ADR whenever a design choice changes.
 
