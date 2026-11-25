@@ -80,7 +80,7 @@ The Rust enums remain the source of truth: [plan-registry errors](../contracts/p
 | 2038 | `PlanChargesPaused` | Charges are paused for the referenced plan. |
 | 2039 | `ProtocolPaused` | Protocol-wide operations are paused. |
 
-## Vault (3001–3015)
+## Vault (3001–3016)
 
 | Code | Variant | Returned when |
 | --- | --- | --- |
@@ -99,5 +99,6 @@ The Rust enums remain the source of truth: [plan-registry errors](../contracts/p
 | 3013 | `InvalidWindow` | The supplied rate-limit window is invalid. |
 | 3014 | `ReserveExceedsBalance` | The requested reserve is greater than the available balance. |
 | 3015 | `RateLimitExceeded` | The operation exceeds the configured rate limit. |
+| 3016 | `ZeroAddress` | A withdrawal or payout destination is the zero/unset account or contract address. |
 
 When adding a new error, append it to the relevant enum and update this catalog in the same change. Clients should match on the numeric code and handle unknown future codes gracefully.

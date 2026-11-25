@@ -22,6 +22,8 @@ const PRICE: i128 = 10_000;
 const FEE_BPS: u32 = 100; // 1%
 const KEEPER_BPS: u32 = 200; // 2% of the merchant share
 const REFERRAL_BPS: u32 = 1_000; // 10% of the merchant share (from #136)
+/// The all-zero contract strkey (#236).
+const ZERO_CONTRACT: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
 /// A valid subscription wasm used as the `upgrade_wasm` target (#158).
 const UPGRADE_WASM: &[u8] = include_bytes!("../testdata/payflow_subscription.wasm");
 
@@ -1890,6 +1892,24 @@ fn quote_and_charge_agree_on_not_due() {
     assert_eq!(quote.due_at, w.env.ledger().timestamp() + MONTH);
 
     assert_eq!(w.sub.try_charge(&w.keeper, &id), Err(Ok(Error::NotDue)));
+}
+
+#[test]
+fn charge_with_a_zero_payout_address_fails_at_settlement() {
+    let w = world();
+    let zero = Address::from_str(&w.env, ZERO_CONTRACT);
+    let plan_id = w.plan_full(0, 0, Some(zero.clone()));
+    let user = w.subscriber(100_000);
+    let id = w.sub.subscribe(&user, &plan_id, &0, &0, &None::<Address>);
+
+    assert!(w.sub.quote_charge(&id).chargeable);
+    assert_eq!(
+        w.sub.try_charge(&w.keeper, &id),
+        Err(Ok(Error::VaultCallFailed))
+    );
+    assert_eq!(w.vault.balance(&user, &w.token), 100_000);
+    assert_eq!(w.token_client.balance(&zero), 0);
+    assert_eq!(w.sub.get_mandate(&id).charges_made, 0);
 }
 
 /// Quote chargeable=true but charge fails with `VaultCallFailed` when insufficient balance.

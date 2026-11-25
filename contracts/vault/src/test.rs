@@ -11,6 +11,9 @@ use soroban_sdk::{
 };
 
 const THIRTY_DAYS: u64 = 2_592_000;
+/// The all-zero account and contract strkeys (#236).
+const ZERO_ACCOUNT: &str = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+const ZERO_CONTRACT: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
 /// A valid vault wasm used as the target for `upgrade_wasm` tests (#158); the
 /// contract upgrades to a copy of itself, exercising the upgrade mechanism.
 const UPGRADE_WASM: &[u8] = include_bytes!("../testdata/payflow_vault.wasm");
@@ -186,6 +189,62 @@ fn withdraw_to_rejects_non_positive_and_excess_amounts() {
     );
     assert_eq!(h.vault.balance(&user, &h.token), 1_000);
     assert_eq!(h.token_client.balance(&destination), 0);
+}
+
+#[test]
+fn withdraw_to_rejects_the_zero_address() {
+    let h = setup();
+    let user = funded_user(&h, 10_000);
+    h.vault.deposit(&user, &h.token, &1_000);
+
+    for zero in [
+        Address::from_str(&h.env, ZERO_ACCOUNT),
+        Address::from_str(&h.env, ZERO_CONTRACT),
+    ] {
+        assert_eq!(
+            h.vault.try_withdraw_to(&user, &h.token, &zero, &100),
+            Err(Ok(Error::ZeroAddress))
+        );
+    }
+
+    assert_eq!(h.vault.balance(&user, &h.token), 1_000);
+    assert_eq!(h.token_client.balance(&h.vault_id), 1_000);
+    // A rejected destination consumes no rate-limit budget: a real withdrawal
+    // still succeeds immediately afterwards.
+    let destination = Address::generate(&h.env);
+    h.vault.withdraw_to(&user, &h.token, &destination, &100);
+    assert_eq!(h.token_client.balance(&destination), 100);
+}
+
+#[test]
+fn payouts_to_the_zero_address_are_rejected_without_spending() {
+    let h = setup();
+    let user = depositor(&h, 1_000);
+    let zero = Address::from_str(&h.env, ZERO_CONTRACT);
+    let good = Address::generate(&h.env);
+
+    assert_eq!(
+        h.vault.try_debit(&user, &h.token, &zero, &100),
+        Err(Ok(Error::ZeroAddress))
+    );
+    assert_eq!(
+        h.vault
+            .try_debit_split(&user, &h.token, &good, &100, &zero, &50),
+        Err(Ok(Error::ZeroAddress))
+    );
+    let mut legs = soroban_sdk::Vec::new(&h.env);
+    legs.push_back((good.clone(), 100_i128));
+    legs.push_back((zero.clone(), 50_i128));
+    assert_eq!(
+        h.vault
+            .try_debit_multi_mandate(&user, &h.token, &MANDATE_A, &legs),
+        Err(Ok(Error::ZeroAddress))
+    );
+
+    assert_eq!(h.vault.balance(&user, &h.token), 1_000);
+    assert_eq!(h.token_client.balance(&good), 0);
+    assert_eq!(h.token_client.balance(&zero), 0);
+    assert_eq!(h.token_client.balance(&h.vault_id), 1_000);
 }
 
 #[test]

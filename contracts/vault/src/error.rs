@@ -50,6 +50,9 @@ pub enum Error {
     /// repeatedly rewrites balances and emits events; it resets when the
     /// window rolls over.
     RateLimitExceeded = 3015,
+    /// A transfer destination is the zero/unset address: the all-zero contract
+    /// or account strkey. Sending funds there would burn them (#236).
+    ZeroAddress = 3016,
 }
 
 impl From<Error> for ErrorCode {
