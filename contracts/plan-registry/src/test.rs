@@ -4,7 +4,9 @@ extern crate std;
 use super::*;
 use soroban_sdk::xdr::{ContractEventBody, ScMap, ScSymbol, ScVal};
 use soroban_sdk::{
-    testutils::{Address as _, Events as _, MockAuth, MockAuthInvoke},
+    testutils::{
+        storage::Persistent as _, Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke,
+    },
     Address, Env, IntoVal, String, Symbol, TryFromVal, Vec,
 };
 
@@ -3799,6 +3801,67 @@ fn the_registry_read_only_check_catches_a_state_change() {
     assert_read_only(&env, "set_plan_active", || {
         c.set_plan_active(&merchant, &active, &false);
     });
+}
+
+// ---------------------------------------------------------------- #247
+// TTL refresh whenever a hot plan key is accessed.
+
+fn hot_plan_world() -> (Env, PlanRegistryClient<'static>, Address, u64) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let id = env.register(PlanRegistry, (admin,));
+    let client = PlanRegistryClient::new(&env, &id);
+    let merchant = Address::generate(&env);
+    let token = Address::generate(&env);
+    let plan_id = simple_plan(&env, &client, &merchant, &token);
+    (env, client, id, plan_id)
+}
+
+fn plan_ttl(env: &Env, contract: &Address, plan_id: u64) -> u32 {
+    env.as_contract(contract, || {
+        env.storage().persistent().get_ttl(&DataKey::Plan(plan_id))
+    })
+}
+
+#[test]
+fn hot_plan_ttl_is_extended_on_view_access() {
+    let (env, client, contract, plan_id) = hot_plan_world();
+    let before = client.get_plan(&plan_id);
+
+    let seq = env.ledger().sequence();
+    env.ledger().set_sequence_number(seq + 30 * DAY_IN_LEDGERS);
+    let aged = plan_ttl(&env, &contract, plan_id);
+    assert!(aged < PERSIST_BUMP);
+
+    assert_eq!(client.get_plan(&plan_id), before);
+    assert_eq!(plan_ttl(&env, &contract, plan_id), PERSIST_BUMP);
+}
+
+#[test]
+fn hot_plan_ttl_is_extended_when_charges_are_checked() {
+    let (env, client, contract, plan_id) = hot_plan_world();
+
+    let seq = env.ledger().sequence();
+    env.ledger().set_sequence_number(seq + 30 * DAY_IN_LEDGERS);
+    assert!(plan_ttl(&env, &contract, plan_id) < PERSIST_BUMP);
+
+    assert!(!client.plan_charges_paused(&plan_id));
+    assert_eq!(plan_ttl(&env, &contract, plan_id), PERSIST_BUMP);
+}
+
+#[test]
+fn fresh_and_missing_plans_are_untouched_by_access() {
+    let (env, client, contract, plan_id) = hot_plan_world();
+    let ttl = plan_ttl(&env, &contract, plan_id);
+    assert_eq!(ttl, PERSIST_BUMP);
+    client.get_plan(&plan_id);
+    assert_eq!(plan_ttl(&env, &contract, plan_id), ttl);
+
+    assert_eq!(
+        client.try_get_plan(&(plan_id + 100)),
+        Err(Ok(Error::PlanNotFound))
+    );
 }
 
 // ---------------------------------------------------------------------------

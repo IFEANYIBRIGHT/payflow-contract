@@ -1195,10 +1195,16 @@ mod contract {
         }
 
         fn read_reserved(env: &Env, user: &Address, token: &Address, mandate_id: u64) -> i128 {
-            env.storage()
-                .persistent()
-                .get(&DataKey::Reserved(user.clone(), token.clone(), mandate_id))
-                .unwrap_or(0)
+            let key = DataKey::Reserved(user.clone(), token.clone(), mandate_id);
+            let p = env.storage().persistent();
+            let Some(amount) = p.get::<_, i128>(&key) else {
+                return 0;
+            };
+            // A reserve belongs to a live mandate (#247): refreshing it on
+            // access keeps the reservation from expiring while the mandate is
+            // still being charged. A missing reserve is a no-op.
+            p.extend_ttl(&key, PERSIST_THRESHOLD, PERSIST_BUMP);
+            amount
         }
 
         /// Store a mandate's reserve; 0 removes the entry so an unreserved
@@ -1221,10 +1227,13 @@ mod contract {
         }
 
         fn read_reserved_total(env: &Env, user: &Address, token: &Address) -> i128 {
-            env.storage()
-                .persistent()
-                .get(&DataKey::ReservedTotal(user.clone(), token.clone()))
-                .unwrap_or(0)
+            let key = DataKey::ReservedTotal(user.clone(), token.clone());
+            let p = env.storage().persistent();
+            let Some(amount) = p.get::<_, i128>(&key) else {
+                return 0;
+            };
+            p.extend_ttl(&key, PERSIST_THRESHOLD, PERSIST_BUMP);
+            amount
         }
 
         fn write_reserved_total(env: &Env, user: &Address, token: &Address, amount: i128) {

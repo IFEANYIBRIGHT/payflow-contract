@@ -4,7 +4,9 @@ use super::*;
 use payflow_test_token::{TestToken, TestTokenClient};
 use soroban_sdk::{testutils::AuthorizedFunction, Symbol};
 use soroban_sdk::{
-    testutils::{Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke},
+    testutils::{
+        storage::Persistent as _, Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke,
+    },
     token::{StellarAssetClient, TokenClient},
     xdr::{ContractEventBody, ScMap, ScSymbol, ScVal},
     Address, Env, IntoVal, String,
@@ -2398,6 +2400,43 @@ fn reserved_internal_balances_still_add_up_to_holdings() {
     // And every reserve stays inside its balance.
     assert!(h.vault.reserved_total(&alice, &h.token) <= h.vault.balance(&alice, &h.token));
     assert!(h.vault.reserved_total(&bob, &h.token) <= h.vault.balance(&bob, &h.token));
+}
+
+// ---------------------------------------------------------------- #247
+// TTL refresh whenever a mandate's reserve is accessed.
+
+fn reserve_ttl(h: &Harness, key: &DataKey) -> u32 {
+    h.env
+        .as_contract(&h.vault_id, || h.env.storage().persistent().get_ttl(key))
+}
+
+#[test]
+fn hot_reserve_ttl_is_extended_on_view_access() {
+    let h = setup();
+    let user = depositor(&h, 1_000);
+    h.vault.set_reserve(&user, &h.token, &MANDATE_A, &300);
+    let key = DataKey::Reserved(user.clone(), h.token.clone(), MANDATE_A);
+    let total_key = DataKey::ReservedTotal(user.clone(), h.token.clone());
+
+    let seq = h.env.ledger().sequence();
+    h.env
+        .ledger()
+        .set_sequence_number(seq + 30 * DAY_IN_LEDGERS);
+    assert!(reserve_ttl(&h, &key) < PERSIST_BUMP);
+    assert!(reserve_ttl(&h, &total_key) < PERSIST_BUMP);
+
+    assert_eq!(h.vault.reserved(&user, &h.token, &MANDATE_A), 300);
+    assert_eq!(h.vault.reserved_total(&user, &h.token), 300);
+    assert_eq!(reserve_ttl(&h, &key), PERSIST_BUMP);
+    assert_eq!(reserve_ttl(&h, &total_key), PERSIST_BUMP);
+}
+
+#[test]
+fn missing_reserves_have_no_ttl_to_extend() {
+    let h = setup();
+    let user = depositor(&h, 1_000);
+    assert_eq!(h.vault.reserved(&user, &h.token, &MANDATE_A), 0);
+    assert_eq!(h.vault.reserved_total(&user, &h.token), 0);
 }
 
 // ---------------------------------------------------------------------------

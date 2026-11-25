@@ -7310,6 +7310,67 @@ fn extend_merchant_mandates_ttl_budget_beats_one_call_per_mandate() {
     assert!(batched < single);
 }
 
+// ---------------------------------------------------------------- #247
+// TTL refresh whenever a hot mandate key is accessed.
+
+#[test]
+fn hot_mandate_ttl_is_extended_on_view_access() {
+    let w = world();
+    let plan_id = w.plan();
+    let user = w.subscriber(1_000_000);
+    let id = w.sub.subscribe(&user, &plan_id, &0, &0, &None::<Address>);
+    let before = w.sub.get_mandate(&id);
+
+    let seq = w.env.ledger().sequence();
+    w.env
+        .ledger()
+        .set_sequence_number(seq + 30 * DAY_IN_LEDGERS);
+    let aged = persistent_ttl(&w, &DataKey::Mandate(id));
+    assert!(aged < PERSIST_BUMP);
+
+    assert_eq!(w.sub.get_mandate(&id), before);
+    assert_eq!(persistent_ttl(&w, &DataKey::Mandate(id)), PERSIST_BUMP);
+}
+
+#[test]
+fn hot_mandate_ttl_is_extended_on_failed_charge_access() {
+    let w = world();
+    let plan_id = w.plan();
+    // An unfunded subscriber gives `flag_failed_charge` a real failure to
+    // report without rewriting the mandate itself.
+    let user = Address::generate(&w.env);
+    let id = w.sub.subscribe(&user, &plan_id, &0, &0, &None::<Address>);
+
+    let seq = w.env.ledger().sequence();
+    w.env
+        .ledger()
+        .set_sequence_number(seq + 30 * DAY_IN_LEDGERS);
+    let aged = persistent_ttl(&w, &DataKey::Mandate(id));
+    assert!(aged < PERSIST_BUMP);
+
+    assert!(w.sub.flag_failed_charge(&id));
+    assert_eq!(persistent_ttl(&w, &DataKey::Mandate(id)), PERSIST_BUMP);
+}
+
+#[test]
+fn fresh_and_missing_mandates_are_untouched_by_access() {
+    let w = world();
+    let plan_id = w.plan();
+    let user = w.subscriber(1_000_000);
+    let id = w.sub.subscribe(&user, &plan_id, &0, &0, &None::<Address>);
+
+    let ttl = persistent_ttl(&w, &DataKey::Mandate(id));
+    assert_eq!(ttl, PERSIST_BUMP);
+    w.sub.get_mandate(&id);
+    assert_eq!(persistent_ttl(&w, &DataKey::Mandate(id)), ttl);
+
+    assert_eq!(w.sub.try_get_mandate(&999), Err(Ok(Error::MandateNotFound)));
+    assert_eq!(
+        w.sub.try_flag_failed_charge(&999),
+        Err(Ok(Error::MandateNotFound))
+    );
+}
+
 #[test]
 fn subscription_call_budgets_stay_within_committed_snapshots() {
     let mut measurements = std::vec::Vec::new();

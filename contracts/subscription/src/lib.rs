@@ -1952,7 +1952,7 @@ mod contract {
                 else {
                     continue;
                 };
-                let Some(mandate) = storage.get::<_, Mandate>(&DataKey::Mandate(id)) else {
+                let Some(mandate) = Self::read_mandate_opt(&env, id) else {
                     continue;
                 };
                 if super::views::mandate_is_due(&mandate, now) {
@@ -1986,11 +1986,7 @@ mod contract {
 
             let mut total: i128 = 0;
             for id in ids.iter() {
-                let Some(m) = env
-                    .storage()
-                    .persistent()
-                    .get::<_, Mandate>(&DataKey::Mandate(id))
-                else {
+                let Some(m) = Self::read_mandate_opt(&env, id) else {
                     continue;
                 };
                 if m.token != token || !super::lifecycle::active_at(&m, now) || m.period == 0 {
@@ -2047,8 +2043,7 @@ mod contract {
             for i in start..end {
                 let slot_key = DataKey::SubscriberMandate(subscriber.clone(), i);
                 if let Some(mandate_id) = storage.get::<_, u64>(&slot_key) {
-                    if let Some(mandate) = storage.get::<_, Mandate>(&DataKey::Mandate(mandate_id))
-                    {
+                    if let Some(mandate) = Self::read_mandate_opt(&env, mandate_id) {
                         out.push_back(MandateSummary {
                             id: mandate.id,
                             merchant: mandate.merchant.clone(),
@@ -2336,11 +2331,23 @@ mod contract {
                 .ok_or(Error::NotInitialized)
         }
 
+        /// Read a mandate and refresh its TTL when it is close to expiry (#247).
+        /// A mandate can be accessed many times without being rewritten: a
+        /// keeper polling a not-yet-due charge, a failed debit, or a wallet
+        /// reading its status. Those accesses must keep the entry alive. The
+        /// bump is conditional, so an entry with plenty of rent left is
+        /// untouched and views remain side-effect free in the common case.
         fn read_mandate(env: &Env, id: u64) -> Result<Mandate, Error> {
+            Self::read_mandate_opt(env, id).ok_or(Error::MandateNotFound)
+        }
+
+        fn read_mandate_opt(env: &Env, id: u64) -> Option<Mandate> {
+            let key = DataKey::Mandate(id);
+            let mandate: Mandate = env.storage().persistent().get(&key)?;
             env.storage()
                 .persistent()
-                .get(&DataKey::Mandate(id))
-                .ok_or(Error::MandateNotFound)
+                .extend_ttl(&key, PERSIST_THRESHOLD, PERSIST_BUMP);
+            Some(mandate)
         }
 
         fn read_grace_period(env: &Env, id: u64) -> u64 {
@@ -2540,11 +2547,7 @@ mod contract {
                 let Some(mandate_id) = env.storage().persistent().get::<_, u64>(&slot_key) else {
                     continue;
                 };
-                let Some(mandate) = env
-                    .storage()
-                    .persistent()
-                    .get::<_, Mandate>(&DataKey::Mandate(mandate_id))
-                else {
+                let Some(mandate) = Self::read_mandate_opt(env, mandate_id) else {
                     continue;
                 };
                 if mandate.token != plan.token
